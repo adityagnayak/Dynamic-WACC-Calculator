@@ -1,42 +1,190 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+from typing import Tuple, Dict, List
 
 # -----------------------------------------------------------------------------
 # PAGE CONFIGURATION
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Dynamic Multi-Currency WACC",
-    page_icon="🌍",
+    page_title="Global WACC Calculator",
+    page_icon="🌐",
     layout="wide"
 )
 
 # -----------------------------------------------------------------------------
-# UTILITIES: FX RATE FETCHER
+# UTILITIES: FX RATE FETCHER (FIXED & IMPROVED)
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=3600)  # Cache data for 1 hour to prevent constant API calls
-def get_fx_rate(source_curr, target_curr):
-    """Fetches the exchange rate from Yahoo Finance."""
-    if source_curr == target_curr:
+@st.cache_data(ttl=3600)
+def get_fx_rate(home_curr: str, foreign_curr: str) -> float:
+    """
+    Fetches exchange rate: How many HOME currency units per 1 FOREIGN currency unit.
+    Example: Home=USD, Foreign=EUR -> Returns ~1.05 (meaning 1 EUR = 1.05 USD)
+    
+    This allows simple conversion: foreign_amount * fx_rate = home_amount
+    """
+    if home_curr == foreign_curr:
         return 1.0
     
-    # Standard Yahoo Finance tickers are often "EURUSD=X"
-    ticker = f"{source_curr}{target_curr}=X"
+    # Try direct pair: FOREIGN/HOME (e.g., EURUSD=X gives USD per EUR)
+    ticker = f"{foreign_curr}{home_curr}=X"
     try:
         data = yf.Ticker(ticker)
         history = data.history(period="1d")
         if not history.empty:
-            return history['Close'].iloc[-1]
-        else:
-            # Try reverse pair if direct fails
-            ticker_rev = f"{target_curr}{source_curr}=X"
-            data_rev = yf.Ticker(ticker_rev)
-            history_rev = data_rev.history(period="1d")
-            if not history_rev.empty:
-                return 1.0 / history_rev['Close'].iloc[-1]
-    except Exception:
-        return 1.0
+            rate = history['Close'].iloc[-1]
+            return float(rate)
+    except Exception as e:
+        pass
+    
+    # Try reverse pair and invert
+    ticker_rev = f"{home_curr}{foreign_curr}=X"
+    try:
+        data_rev = yf.Ticker(ticker_rev)
+        history_rev = data_rev.history(period="1d")
+        if not history_rev.empty:
+            rate_rev = history_rev['Close'].iloc[-1]
+            return float(1.0 / rate_rev)
+    except Exception as e:
+        pass
+    
+    # If both fail, show warning and return 1.0
+    st.warning(f"⚠️ Could not fetch FX rate for {foreign_curr}/{home_curr}. Using 1.0")
     return 1.0
+
+
+@st.cache_data(ttl=3600)
+def get_all_fx_rates(home_curr: str, foreign_currencies: List[str]) -> Dict[str, float]:
+    """
+    Batch fetch all FX rates to reduce API calls.
+    Returns dict mapping foreign_currency -> exchange_rate
+    """
+    rates = {}
+    unique_currencies = set(foreign_currencies) - {home_curr}
+    
+    for foreign in unique_currencies:
+        rates[foreign] = get_fx_rate(home_curr, foreign)
+    
+    return rates
+
+
+# -----------------------------------------------------------------------------
+# CAPITAL SOURCE RENDERING (REFACTORED - DRY PRINCIPLE)
+# -----------------------------------------------------------------------------
+def render_capital_sources(
+    source_type: str,
+    home_currency: str,
+    currency_options: List[str],
+    default_num: int = 0,
+    default_cost: float = 10.0,
+    cost_label: str = "Cost"
+) -> Tuple[float, float, pd.DataFrame]:
+    """
+    Unified function for rendering equity/debt capital sources.
+    
+    Returns:
+        - total_value: Total value in home currency
+        - total_weighted_cost: Sum of (value * cost) for weighted average
+        - details_df: DataFrame with breakdown of all sources
+    """
+    st.subheader(f"{source_type} Capital Sources")
+    
+    num_sources = st.number_input(
+        f"Number of {source_type} Sources",
+        min_value=0,
+        max_value=20,
+        value=default_num,
+        key=f"num_{source_type.lower().replace(' ', '_')}"
+    )
+    
+    total_value = 0.0
+    total_weighted_cost = 0.0
+    details = []
+    
+    if num_sources > 0:
+        with st.expander(f"Enter {source_type} Details", expanded=True):
+            for i in range(num_sources):
+                st.markdown(f"**{source_type} Source {i+1}**")
+                
+                col1, col2, col3, col4 = st.columns([1, 1.2, 1.2, 1])
+                
+                # Currency selection
+                source_curr = col1.selectbox(
+                    "Currency",
+                    currency_options,
+                    index=0 if i == 0 else 1,
+                    key=f"{source_type.lower()}_{i}_curr"
+                )
+                
+                # Amount input
+                raw_amount = col2.number_input(
+                    f"Amount ({source_curr})",
+                    min_value=0.0,
+                    value=100000.0,
+                    step=1000.0,
+                    format="%.2f",
+                    key=f"{source_type.lower()}_{i}_amt"
+                )
+                
+                # FX Rate (only if different currency)
+                if source_curr != home_currency:
+                    live_rate = get_fx_rate(home_currency, source_curr)
+                    
+                    fx_rate = col3.number_input(
+                        f"1 {source_curr} = ? {home_currency}",
+                        value=float(live_rate),
+                        format="%.6f",
+                        key=f"{source_type.lower()}_{i}_fx",
+                        help=f"Exchange rate: How many {home_currency} per 1 {source_curr}"
+                    )
+                    
+                    # Validate FX rate
+                    if fx_rate <= 0:
+                        st.error(f"❌ Invalid FX rate for source {i+1}. Must be > 0.")
+                        fx_rate = 1.0
+                    
+                    # Convert to home currency
+                    home_value = raw_amount * fx_rate
+                else:
+                    fx_rate = 1.0
+                    home_value = raw_amount
+                    col3.markdown(f"**1:1**<br><small>(Same currency)</small>", unsafe_allow_html=True)
+                
+                # Cost/Rate input
+                cost_rate = col4.number_input(
+                    f"{cost_label} (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=default_cost,
+                    step=0.1,
+                    key=f"{source_type.lower()}_{i}_cost"
+                ) / 100.0
+                
+                # Display converted value
+                if source_curr != home_currency:
+                    st.caption(f"💱 Converted Value: **{home_currency} {home_value:,.2f}**")
+                
+                # Accumulate totals
+                total_value += home_value
+                total_weighted_cost += (home_value * cost_rate)
+                
+                # Store details for breakdown
+                details.append({
+                    'Source': f"{source_type} {i+1}",
+                    'Currency': source_curr,
+                    'Original Amount': raw_amount,
+                    'FX Rate': fx_rate if source_curr != home_currency else '-',
+                    f'{home_currency} Value': home_value,
+                    f'{cost_label} (%)': cost_rate * 100
+                })
+                
+                st.divider()
+    
+    # Create details DataFrame
+    details_df = pd.DataFrame(details) if details else pd.DataFrame()
+    
+    return total_value, total_weighted_cost, details_df
+
 
 # -----------------------------------------------------------------------------
 # CUSTOM CSS
@@ -45,202 +193,479 @@ st.markdown("""
     <style>
     .formula-container {
         font-family: 'Courier New', Courier, monospace;
-        font-size: 22px;
+        font-size: 20px;
         background-color: #f8f9fa;
-        padding: 20px;
-        border-radius: 10px;
+        padding: 15px;
+        border-radius: 8px;
         text-align: center;
-        margin-bottom: 25px;
         border: 1px solid #dee2e6;
+        margin: 20px 0;
     }
-    .term { transition: all 0.3s ease; padding: 2px 6px; border-radius: 4px; }
-    .term-active { color: #198754; font-weight: bold; background-color: #d1e7dd; }
-    .term-inactive { color: #adb5bd; }
-    .operator { color: #495057; font-weight: bold; }
-    .currency-badge {
-        font-size: 0.8em;
-        background-color: #e9ecef;
-        padding: 2px 5px;
-        border-radius: 4px;
-        margin-left: 5px;
-        color: #495057;
+    .term { 
+        transition: all 0.3s ease; 
+        padding: 2px 5px; 
+        border-radius: 4px; 
+    }
+    .term-active { 
+        color: #198754; 
+        font-weight: bold; 
+        background-color: #d1e7dd; 
+    }
+    .term-inactive { 
+        color: #adb5bd; 
+    }
+    .operator { 
+        color: #495057; 
+        font-weight: bold; 
+    }
+    .metric-container {
+        background-color: #f0f2f6;
+        padding: 15px;
+        border-radius: 8px;
+        border-left: 4px solid #1f77b4;
+    }
+    .stAlert {
+        margin-top: 10px;
     }
     </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# HEADER & SETTINGS
+# SIDEBAR / GLOBAL SETTINGS
 # -----------------------------------------------------------------------------
-col_head, col_set = st.columns([3, 1])
-with col_head:
-    st.title("🌍 Multi-Currency WACC Modeler")
-    st.markdown("Calculate WACC with **dynamic foreign debt** conversion.")
-
-with col_set:
-    CURRENCY_OPTIONS = ["USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CNY", "INR", "CHF"]
-    home_currency = st.selectbox("🏠 Home (Reporting) Currency", CURRENCY_OPTIONS, index=0)
-
-st.divider()
-
-# -----------------------------------------------------------------------------
-# INPUTS
-# -----------------------------------------------------------------------------
-
-col1, col2, col3 = st.columns([1, 1.2, 1.5])
-
-# --- 1. TAX & EQUITY ---
-with col1:
-    st.subheader("1. Tax & Equity")
-    tax_rate = st.number_input("Tax Rate (%)", 0.0, 100.0, 21.0, 0.1) / 100.0
+with st.sidebar:
+    st.header("⚙️ Global Settings")
     
-    st.markdown(f"**Equity Capital ({home_currency})**")
-    total_equity = st.number_input(f"Total Equity Value ({home_currency})", 0.0, value=1000000.0, step=10000.0)
-    cost_of_equity = st.number_input("Cost of Equity (Re) %", 0.0, 100.0, 10.0, 0.1) / 100.0
-
-# --- 2. LOCAL DEBT ---
-with col2:
-    st.subheader(f"2. Local Debt ({home_currency})")
-    num_local = st.number_input("No. of Local Loans", 0, 10, 1)
+    CURRENCY_OPTIONS = [
+        "USD", "EUR", "GBP", "JPY", "CAD", 
+        "AUD", "CNY", "INR", "CHF", "SEK", 
+        "NOK", "DKK", "SGD", "HKD", "NZD"
+    ]
     
-    local_debt_total = 0.0
-    local_weighted_rate_sum = 0.0
+    home_currency = st.selectbox(
+        "🏠 Home (Reporting) Currency",
+        CURRENCY_OPTIONS,
+        index=0,
+        help="All foreign amounts will be converted to this currency"
+    )
     
-    if num_local > 0:
-        with st.expander("Local Debt Details", expanded=True):
-            for i in range(num_local):
-                c1, c2 = st.columns(2)
-                amt = c1.number_input(f"Loan {i+1} Amt ({home_currency})", 0.0, value=100000.0, key=f"ld_{i}")
-                rate = c2.number_input(f"Loan {i+1} Rate (%)", 0.0, value=5.0, key=f"lr_{i}") / 100.0
-                
-                local_debt_total += amt
-                local_weighted_rate_sum += (amt * rate)
-
-# --- 3. FOREIGN DEBT (Dynamic FX) ---
-with col3:
-    st.subheader("3. Foreign Debt (FX)")
-    num_foreign = st.number_input("No. of Foreign Loans", 0, 10, 1)
+    st.divider()
     
-    foreign_debt_home_total = 0.0
-    foreign_weighted_rate_sum = 0.0
+    st.subheader("Corporate Tax Settings")
+    tax_rate = st.number_input(
+        "Tax Rate (%)",
+        min_value=0.0,
+        max_value=100.0,
+        value=21.0,
+        step=0.1,
+        help="Corporate tax rate for calculating tax shield on debt"
+    ) / 100.0
     
-    if num_foreign > 0:
-        with st.expander("Foreign Debt Details & FX", expanded=True):
-            for i in range(num_foreign):
-                st.markdown(f"**Foreign Loan {i+1}**")
-                r1, r2, r3, r4 = st.columns([1, 1, 1, 1])
-                
-                # Input: Currency
-                f_curr = r1.selectbox(f"Curr", CURRENCY_OPTIONS, index=1, key=f"fc_{i}")
-                
-                # Fetch FX Rate
-                fetched_rate = get_fx_rate(f_curr, home_currency)
-                
-                # Input: Amount in Foreign Currency
-                f_amt = r2.number_input(f"Amt ({f_curr})", 0.0, value=100000.0, key=f"fa_{i}")
-                
-                # Input: FX Rate (Allow Override)
-                fx_rate = r3.number_input(f"FX ({f_curr}/{home_currency})", value=float(fetched_rate), format="%.4f", key=f"fx_{i}")
-                
-                # Input: Interest Rate
-                f_rate_pct = r4.number_input(f"Rate (%)", 0.0, value=4.0, key=f"fr_{i}") / 100.0
-                
-                # Calculation: Convert to Home Currency
-                amt_home = f_amt / fx_rate
-                foreign_debt_home_total += amt_home
-                foreign_weighted_rate_sum += (amt_home * f_rate_pct)
-                
-                # Visual Feedback
-                st.caption(f"↳ Value in {home_currency}: **{amt_home:,.0f}** (at {fx_rate:.4f})")
+    st.divider()
+    
+    st.markdown("### 📚 About WACC")
+    st.markdown("""
+    **Weighted Average Cost of Capital (WACC)** represents the average rate 
+    a company expects to pay to finance its assets.
+    
+    **Formula:**
+    ```
+    WACC = (E/V × Re) + (D/V × Rd × (1-T))
+    ```
+    
+    Where:
+    - E = Market value of equity
+    - D = Market value of debt
+    - V = E + D (total firm value)
+    - Re = Cost of equity
+    - Rd = Cost of debt
+    - T = Tax rate
+    """)
+    
+    st.divider()
+    
+    # Add refresh button for FX rates
+    if st.button("🔄 Refresh FX Rates", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
 # -----------------------------------------------------------------------------
-# CALCULATIONS
+# MAIN APP
 # -----------------------------------------------------------------------------
+st.title("🌐 Global WACC Calculator")
+st.markdown(f"Calculate Weighted Average Cost of Capital reporting in **{home_currency}**.")
+st.markdown("---")
 
-# Total Debt (in Home Currency)
-total_debt = local_debt_total + foreign_debt_home_total
+# -----------------------------------------------------------------------------
+# EQUITY CAPITAL
+# -----------------------------------------------------------------------------
+st.header("1️⃣ Equity Capital")
+equity_value, equity_weighted_cost, equity_details = render_capital_sources(
+    source_type="Equity",
+    home_currency=home_currency,
+    currency_options=CURRENCY_OPTIONS,
+    default_num=1,
+    default_cost=10.0,
+    cost_label="Cost of Equity"
+)
 
-# Weighted Average Cost of Debt (Rd)
-# We weight the interest rates by the Home Currency Value of the principal
-total_weighted_interest = local_weighted_rate_sum + foreign_weighted_rate_sum
+# Calculate blended cost of equity
+if equity_value > 0:
+    cost_of_equity = equity_weighted_cost / equity_value
+else:
+    cost_of_equity = 0.0
 
-if total_debt > 0:
-    cost_of_debt = total_weighted_interest / total_debt
+st.info(f"**📊 Total Equity (E):** {home_currency} {equity_value:,.2f}  |  **Cost of Equity (Re):** {cost_of_equity:.2%}")
+
+# -----------------------------------------------------------------------------
+# DEBT CAPITAL
+# -----------------------------------------------------------------------------
+st.header("2️⃣ Debt Capital")
+debt_value, debt_weighted_cost, debt_details = render_capital_sources(
+    source_type="Debt",
+    home_currency=home_currency,
+    currency_options=CURRENCY_OPTIONS,
+    default_num=1,
+    default_cost=5.0,
+    cost_label="Interest Rate"
+)
+
+# Calculate blended cost of debt
+if debt_value > 0:
+    cost_of_debt = debt_weighted_cost / debt_value
 else:
     cost_of_debt = 0.0
 
-total_value = total_equity + total_debt
-
-# WACC Calculation
-if total_value > 0:
-    wacc = ((total_equity / total_value) * cost_of_equity) + \
-           ((total_debt / total_value) * cost_of_debt * (1 - tax_rate))
-else:
-    wacc = 0.0
+st.info(f"**📊 Total Debt (D):** {home_currency} {debt_value:,.2f}  |  **Cost of Debt (Rd):** {cost_of_debt:.2%}")
 
 # -----------------------------------------------------------------------------
-# DYNAMIC FORMULA DISPLAY
+# VALIDATION
 # -----------------------------------------------------------------------------
-def get_cls(val): return "term-active" if val > 0 else "term-inactive"
+total_firm_value = equity_value + debt_value
+
+if total_firm_value == 0:
+    st.warning("⚠️ **Total firm value is zero.** Please enter equity and/or debt capital amounts to calculate WACC.")
+    st.stop()
+
+# -----------------------------------------------------------------------------
+# WACC CALCULATION
+# -----------------------------------------------------------------------------
+st.markdown("---")
+st.header("3️⃣ WACC Calculation")
+
+# Calculate WACC
+equity_weight = equity_value / total_firm_value
+debt_weight = debt_value / total_firm_value
+tax_shield = 1 - tax_rate
+
+wacc = (equity_weight * cost_of_equity) + (debt_weight * cost_of_debt * tax_shield)
+
+# Check for anomalies
+if wacc < 0:
+    st.error("❌ **Negative WACC detected.** Please review your inputs - this is unusual and may indicate an error.")
+elif wacc > 1.0:
+    st.warning("⚠️ **WACC exceeds 100%.** This is highly unusual - please verify your cost inputs.")
+
+# -----------------------------------------------------------------------------
+# DYNAMIC FORMULA VISUALIZATION
+# -----------------------------------------------------------------------------
+def get_cls(val): 
+    return "term-active" if val > 0 else "term-inactive"
 
 html_formula = f"""
 <div class="formula-container">
     WACC = 
     [ 
-    <span class="term {get_cls(total_equity)}" title="Equity Value">E</span> 
+    <span class="term {get_cls(equity_value)}" title="Total Equity: {home_currency} {equity_value:,.2f}">E</span> 
     <span class="operator">/</span> 
-    <span class="term {get_cls(total_value)}" title="Total Value">V</span> 
+    <span class="term {get_cls(total_firm_value)}" title="Total Firm Value: {home_currency} {total_firm_value:,.2f}">V</span> 
     <span class="operator">×</span> 
-    <span class="term {get_cls(cost_of_equity)}">Re</span> 
+    <span class="term {get_cls(cost_of_equity)}" title="Cost of Equity: {cost_of_equity:.2%}">Re</span> 
     ]
     <span class="operator">+</span>
     [ 
-    <span class="term {get_cls(total_debt)}" title="Debt Value (Converted to Home Currency)">D</span> 
+    <span class="term {get_cls(debt_value)}" title="Total Debt: {home_currency} {debt_value:,.2f}">D</span> 
     <span class="operator">/</span> 
-    <span class="term {get_cls(total_value)}" title="Total Value">V</span> 
+    <span class="term {get_cls(total_firm_value)}" title="Total Firm Value: {home_currency} {total_firm_value:,.2f}">V</span> 
     <span class="operator">×</span> 
-    <span class="term {get_cls(cost_of_debt)}" title="Weighted Cost of Debt">Rd</span> 
+    <span class="term {get_cls(cost_of_debt)}" title="Cost of Debt: {cost_of_debt:.2%}">Rd</span> 
     <span class="operator">×</span> 
-    (1 - <span class="term {get_cls(tax_rate)}">T</span>) 
+    (1 - <span class="term {get_cls(tax_rate)}" title="Tax Rate: {tax_rate:.2%}">T</span>) 
     ]
 </div>
 """
+
 st.markdown(html_formula, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# RESULTS
+# FINAL METRICS DASHBOARD
 # -----------------------------------------------------------------------------
-st.subheader("Calculation Results")
-c_res1, c_res2, c_res3, c_res4 = st.columns(4)
+st.subheader("📈 Results Summary")
 
-with c_res1:
-    st.metric("Total Equity (E)", f"{home_currency} {total_equity:,.0f}")
-with c_res2:
-    st.metric("Total Debt (D)", f"{home_currency} {total_debt:,.0f}", help="Sum of Local + Converted Foreign Debt")
-with c_res3:
-    st.metric("Weighted Cost of Debt (Rd)", f"{cost_of_debt:.2%}")
-with c_res4:
-    st.metric("WACC", f"{wacc:.2%}", delta="Final Metric")
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(
+        "Total Firm Value (V)",
+        f"{home_currency} {total_firm_value:,.0f}",
+        help="Sum of all equity and debt"
+    )
+
+with col2:
+    st.metric(
+        "Cost of Equity (Re)",
+        f"{cost_of_equity:.2%}",
+        help="Weighted average cost of all equity sources"
+    )
+
+with col3:
+    st.metric(
+        "Cost of Debt (Rd)",
+        f"{cost_of_debt:.2%}",
+        help="Weighted average cost of all debt sources"
+    )
+
+with col4:
+    st.metric(
+        "**WACC**",
+        f"{wacc:.2%}",
+        delta="Calculated",
+        delta_color="off",
+        help="Weighted Average Cost of Capital"
+    )
+
+# Additional metrics row
+col5, col6, col7, col8 = st.columns(4)
+
+with col5:
+    st.metric(
+        "Equity Weight",
+        f"{equity_weight:.1%}",
+        help="E/V ratio"
+    )
+
+with col6:
+    st.metric(
+        "Debt Weight",
+        f"{debt_weight:.1%}",
+        help="D/V ratio"
+    )
+
+with col7:
+    st.metric(
+        "After-Tax Cost of Debt",
+        f"{cost_of_debt * tax_shield:.2%}",
+        help=f"Rd × (1 - T) = {cost_of_debt:.2%} × {tax_shield:.2%}"
+    )
+
+with col8:
+    st.metric(
+        "Tax Shield",
+        f"{tax_shield:.1%}",
+        help=f"1 - {tax_rate:.1%}"
+    )
 
 # -----------------------------------------------------------------------------
-# LOGIC DISCLOSURE
+# DETAILED BREAKDOWN
 # -----------------------------------------------------------------------------
-with st.expander("View Logic & Python Code"):
+st.markdown("---")
+
+with st.expander("📊 Detailed Capital Structure Breakdown", expanded=False):
+    tab1, tab2, tab3 = st.tabs(["Equity Details", "Debt Details", "Combined View"])
+    
+    with tab1:
+        if not equity_details.empty:
+            st.dataframe(
+                equity_details.style.format({
+                    'Original Amount': '{:,.2f}',
+                    f'{home_currency} Value': '{:,.2f}',
+                    'Cost of Equity (%)': '{:.2f}',
+                    'FX Rate': lambda x: '{:.6f}'.format(x) if isinstance(x, (int, float)) else x
+                }),
+                use_container_width=True
+            )
+            
+            # Summary stats
+            st.markdown("**Summary:**")
+            st.write(f"- Total Equity Sources: {len(equity_details)}")
+            st.write(f"- Total Equity Value: {home_currency} {equity_value:,.2f}")
+            st.write(f"- Weighted Average Cost: {cost_of_equity:.2%}")
+        else:
+            st.info("No equity sources entered.")
+    
+    with tab2:
+        if not debt_details.empty:
+            st.dataframe(
+                debt_details.style.format({
+                    'Original Amount': '{:,.2f}',
+                    f'{home_currency} Value': '{:,.2f}',
+                    'Interest Rate (%)': '{:.2f}',
+                    'FX Rate': lambda x: '{:.6f}'.format(x) if isinstance(x, (int, float)) else x
+                }),
+                use_container_width=True
+            )
+            
+            # Summary stats
+            st.markdown("**Summary:**")
+            st.write(f"- Total Debt Sources: {len(debt_details)}")
+            st.write(f"- Total Debt Value: {home_currency} {debt_value:,.2f}")
+            st.write(f"- Weighted Average Cost: {cost_of_debt:.2%}")
+            st.write(f"- After-Tax Cost: {cost_of_debt * tax_shield:.2%}")
+        else:
+            st.info("No debt sources entered.")
+    
+    with tab3:
+        # Combined capital structure
+        combined_data = {
+            'Capital Type': ['Equity', 'Debt', 'Total'],
+            f'Value ({home_currency})': [equity_value, debt_value, total_firm_value],
+            'Weight (%)': [equity_weight * 100, debt_weight * 100, 100.0],
+            'Cost (%)': [cost_of_equity * 100, cost_of_debt * 100, '-'],
+            'After-Tax Cost (%)': [cost_of_equity * 100, cost_of_debt * tax_shield * 100, wacc * 100]
+        }
+        
+        df_combined = pd.DataFrame(combined_data)
+        st.dataframe(
+            df_combined.style.format({
+                f'Value ({home_currency})': '{:,.2f}',
+                'Weight (%)': '{:.2f}',
+                'Cost (%)': lambda x: '{:.2f}'.format(x) if x != '-' else x,
+                'After-Tax Cost (%)': '{:.2f}'
+            }),
+            use_container_width=True
+        )
+
+# -----------------------------------------------------------------------------
+# CALCULATION LOGIC DISCLOSURE
+# -----------------------------------------------------------------------------
+with st.expander("🔍 View Python Calculation Logic"):
     st.code(f"""
-# 1. Foreign Debt Conversion
-# We iterate through foreign loans and convert them to {home_currency}
-# Formula: Amount_Home = Amount_Foreign * FX_Rate
-total_debt_home = {local_debt_total} (Local) + {foreign_debt_home_total} (Foreign Converted)
+# ============================================================================
+# GLOBAL WACC CALCULATOR - CALCULATION LOGIC
+# ============================================================================
 
-# 2. Weighted Cost of Debt (Rd)
-# We weight the interest rate of each loan by its value in {home_currency}
-weighted_interest = {total_weighted_interest:,.2f}
-total_debt = {total_debt:,.2f}
-rd = weighted_interest / total_debt  # Result: {cost_of_debt:.2%}
+# 1. FOREIGN EXCHANGE CONVERSION
+# --------------------------------
+# FX Rate Definition: How many {home_currency} per 1 unit of Foreign Currency
+# Example: If 1 EUR = 1.05 USD, then FX_rate = 1.05
+#
+# Conversion Formula:
+#   Foreign Amount × FX Rate = Home Currency Amount
+#   Example: 100,000 EUR × 1.05 = 105,000 USD
 
-# 3. WACC Calculation
-equity_weight = {total_equity} / {total_value}
-debt_weight = {total_debt} / {total_value}
-tax_shield = (1 - {tax_rate})
+# 2. CAPITAL AGGREGATION
+# ----------------------
+Total_Equity = {equity_value:,.2f} {home_currency}
+Total_Debt   = {debt_value:,.2f} {home_currency}
+Total_Value  = {total_firm_value:,.2f} {home_currency}
 
-wacc = (equity_weight * {cost_of_equity}) + (debt_weight * {cost_of_debt} * tax_shield)
+# 3. WEIGHTED AVERAGE COSTS
+# --------------------------
+# For each capital source i:
+#   Weighted_Cost_i = Value_i × Cost_i
+#
+# Blended Cost = Sum(Weighted_Cost_i) / Sum(Value_i)
+
+Cost_of_Equity = {cost_of_equity:.6f}  # {cost_of_equity:.2%}
+Cost_of_Debt   = {cost_of_debt:.6f}  # {cost_of_debt:.2%}
+
+# 4. WACC FORMULA
+# ---------------
+# Standard WACC with tax shield on debt:
+
+Equity_Weight = Total_Equity / Total_Value  # {equity_weight:.6f}
+Debt_Weight   = Total_Debt / Total_Value    # {debt_weight:.6f}
+Tax_Rate      = {tax_rate:.6f}  # {tax_rate:.2%}
+Tax_Shield    = 1 - Tax_Rate    # {tax_shield:.6f}
+
+WACC = (Equity_Weight × Cost_of_Equity) + \\
+       (Debt_Weight × Cost_of_Debt × Tax_Shield)
+
+WACC = ({equity_weight:.6f} × {cost_of_equity:.6f}) + \\
+       ({debt_weight:.6f} × {cost_of_debt:.6f} × {tax_shield:.6f})
+
+WACC = {wacc:.6f}  # {wacc:.2%}
+
+# ============================================================================
+# NOTES:
+# ============================================================================
+# - Tax shield applies only to debt (interest is tax-deductible)
+# - Assumes company is consistently profitable
+# - FX rates are live-fetched from Yahoo Finance
+# - All foreign amounts are converted using current spot rates
+# ============================================================================
     """, language="python")
+
+# -----------------------------------------------------------------------------
+# EXPORT FUNCTIONALITY
+# -----------------------------------------------------------------------------
+st.markdown("---")
+st.subheader("📥 Export Results")
+
+# Prepare export data
+export_data = {
+    'Metric': [
+        'Total Equity (E)',
+        'Total Debt (D)',
+        'Total Firm Value (V)',
+        'Cost of Equity (Re)',
+        'Cost of Debt (Rd)',
+        'Tax Rate (T)',
+        'After-Tax Cost of Debt',
+        'Equity Weight (E/V)',
+        'Debt Weight (D/V)',
+        'WACC'
+    ],
+    'Value': [
+        f"{equity_value:,.2f}",
+        f"{debt_value:,.2f}",
+        f"{total_firm_value:,.2f}",
+        f"{cost_of_equity:.4%}",
+        f"{cost_of_debt:.4%}",
+        f"{tax_rate:.4%}",
+        f"{cost_of_debt * tax_shield:.4%}",
+        f"{equity_weight:.4%}",
+        f"{debt_weight:.4%}",
+        f"{wacc:.4%}"
+    ],
+    'Currency/Unit': [
+        home_currency,
+        home_currency,
+        home_currency,
+        'Percentage',
+        'Percentage',
+        'Percentage',
+        'Percentage',
+        'Percentage',
+        'Percentage',
+        'Percentage'
+    ]
+}
+
+df_export = pd.DataFrame(export_data)
+
+# Download button
+csv = df_export.to_csv(index=False).encode('utf-8')
+st.download_button(
+    label="📄 Download Summary (CSV)",
+    data=csv,
+    file_name=f"wacc_summary_{home_currency}.csv",
+    mime="text/csv",
+    use_container_width=True
+)
+
+# -----------------------------------------------------------------------------
+# FOOTER
+# -----------------------------------------------------------------------------
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666; padding: 20px;'>
+    <small>
+        <strong>Global WACC Calculator</strong> | 
+        Built with Streamlit & Python | 
+        FX rates from Yahoo Finance
+        <br>
+        ⚠️ For educational purposes only. Consult financial professionals for investment decisions.
+    </small>
+</div>
+""", unsafe_allow_html=True)
