@@ -145,7 +145,7 @@ with col3:
                 f_rate_pct = r4.number_input(f"Rate (%)", 0.0, value=4.0, key=f"fr_{i}") / 100.0
                 
                 # Calculation: Convert to Home Currency
-                amt_home = f_amt * fx_rate
+                amt_home = f_amt / fx_rate
                 foreign_debt_home_total += amt_home
                 foreign_weighted_rate_sum += (amt_home * f_rate_pct)
                 
