@@ -246,7 +246,8 @@ with st.sidebar:
         "🏠 Home (Reporting) Currency",
         CURRENCY_OPTIONS,
         index=0,
-        help="All foreign amounts will be converted to this currency"
+        help="All foreign amounts will be converted to this currency",
+        key="home_currency_select"
     )
     
     st.divider()
@@ -284,10 +285,11 @@ with st.sidebar:
     
     st.divider()
     
-    # Add refresh button for FX rates
+# Add refresh button for FX rates
     if st.button("🔄 Refresh FX Rates", use_container_width=True):
         st.cache_data.clear()
-        st.rerun()
+        st.success("✅ FX rates cache cleared! Rates will refresh on next calculation.")
+        st.info("💡 Tip: FX rates auto-refresh every hour.")
 
 # -----------------------------------------------------------------------------
 # MAIN APP
