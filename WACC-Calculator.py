@@ -70,7 +70,6 @@ def get_all_fx_rates(home_curr: str, foreign_currencies: List[str]) -> Dict[str,
     
     return rates
 
-
 # -----------------------------------------------------------------------------
 # CAPITAL SOURCE RENDERING (REFACTORED - DRY PRINCIPLE)
 # -----------------------------------------------------------------------------
