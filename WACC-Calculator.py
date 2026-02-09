@@ -15,7 +15,7 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 # UTILITIES: FX RATE FETCHER (FIXED & IMPROVED)
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=10)
 def get_fx_rate(home_curr: str, foreign_curr: str) -> float:
     """
     Fetches exchange rate: How many HOME currency units per 1 FOREIGN currency unit.
@@ -56,7 +56,7 @@ def get_fx_rate(home_curr: str, foreign_curr: str) -> float:
     return 1.0
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def get_all_fx_rates(home_curr: str, foreign_currencies: List[str]) -> Dict[str, float]:
     """
     Batch fetch all FX rates to reduce API calls.
