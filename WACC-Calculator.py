@@ -15,7 +15,7 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 # UTILITIES: FX RATE FETCHER (FIXED & IMPROVED)
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=3600)
 def get_fx_rate(home_curr: str, foreign_curr: str) -> float:
     """
     Fetches exchange rate: How many HOME currency units per 1 FOREIGN currency unit.
@@ -56,7 +56,7 @@ def get_fx_rate(home_curr: str, foreign_curr: str) -> float:
     return 1.0
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600)
 def get_all_fx_rates(home_curr: str, foreign_currencies: List[str]) -> Dict[str, float]:
     """
     Batch fetch all FX rates to reduce API calls.
@@ -69,6 +69,7 @@ def get_all_fx_rates(home_curr: str, foreign_currencies: List[str]) -> Dict[str,
         rates[foreign] = get_fx_rate(home_curr, foreign)
     
     return rates
+
 
 # -----------------------------------------------------------------------------
 # CAPITAL SOURCE RENDERING (REFACTORED - DRY PRINCIPLE)
@@ -130,20 +131,41 @@ def render_capital_sources(
                 
                 # FX Rate (only if different currency)
                 if source_curr != home_currency:
+                    # Force fresh FX rate fetch when currency changes
                     live_rate = get_fx_rate(home_currency, source_curr)
+                    
+                    # Create a unique key that forces widget refresh on currency change
+                    # This key changes whenever either currency changes
+                    fx_input_key = f"{source_type.lower()}_{i}_fx_{home_currency}_{source_curr}"
+                    
+                    # Check if currency changed and force value update
+                    prev_key = f"{source_type.lower()}_{i}_prev_curr"
+                    if prev_key not in st.session_state:
+                        st.session_state[prev_key] = source_curr
+                    
+                    # If currency changed, clear the old FX value from session state
+                    if st.session_state[prev_key] != source_curr:
+                        st.session_state[prev_key] = source_curr
+                        # Force the widget to use the new live_rate by removing old value
+                        if fx_input_key in st.session_state:
+                            del st.session_state[fx_input_key]
                     
                     fx_rate = col3.number_input(
                         f"1 {source_curr} = ? {home_currency}",
                         value=float(live_rate),
                         format="%.6f",
-                        key=f"{source_type.lower()}_{i}_fx",
-                        help=f"Exchange rate: How many {home_currency} per 1 {source_curr}"
+                        key=fx_input_key,
+                        help=f"Exchange rate: How many {home_currency} per 1 {source_curr}. Auto-fetched from Yahoo Finance. You can override this value if needed."
                     )
                     
                     # Validate FX rate
                     if fx_rate <= 0:
                         st.error(f"❌ Invalid FX rate for source {i+1}. Must be > 0.")
                         fx_rate = 1.0
+                    
+                    # Show rate verification (helpful for debugging)
+                    if abs(fx_rate - live_rate) > 0.0001:
+                        st.caption(f"ℹ️ Using manual rate. Auto-fetched was: {live_rate:.6f}")
                     
                     # Convert to home currency
                     home_value = raw_amount * fx_rate
@@ -287,7 +309,7 @@ with st.sidebar:
     
     st.divider()
     
-# Add refresh button for FX rates
+    # Add refresh button for FX rates
     if st.button("🔄 Refresh FX Rates", use_container_width=True):
         st.cache_data.clear()
         st.success("✅ FX rates cache cleared! Rates will refresh on next calculation.")
