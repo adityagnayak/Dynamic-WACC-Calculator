@@ -30,10 +30,11 @@ def get_fx_rate(home_curr: str, foreign_curr: str) -> float:
     ticker = f"{foreign_curr}{home_curr}=X"
     try:
         data = yf.Ticker(ticker)
-        history = data.history(period="1d")
-        if not history.empty:
+        history = data.history(period="1d", timeout=10)
+        if not history.empty and len(history) > 0:
             rate = history['Close'].iloc[-1]
-            return float(rate)
+            if rate > 0:  # Validate the rate is positive
+                return float(rate)
     except Exception as e:
         pass
     
@@ -41,15 +42,17 @@ def get_fx_rate(home_curr: str, foreign_curr: str) -> float:
     ticker_rev = f"{home_curr}{foreign_curr}=X"
     try:
         data_rev = yf.Ticker(ticker_rev)
-        history_rev = data_rev.history(period="1d")
-        if not history_rev.empty:
+        history_rev = data_rev.history(period="1d", timeout=10)
+        if not history_rev.empty and len(history_rev) > 0:
             rate_rev = history_rev['Close'].iloc[-1]
-            return float(1.0 / rate_rev)
+            if rate_rev > 0:  # Validate before inverting
+                inverted = 1.0 / rate_rev
+                return float(inverted)
     except Exception as e:
         pass
     
-    # If both fail, show warning and return 1.0
-    st.warning(f"⚠️ Could not fetch FX rate for {foreign_curr}/{home_curr}. Using 1.0")
+    # If both fail, show detailed warning
+    st.warning(f"⚠️ Could not fetch FX rate for {foreign_curr}/{home_curr}. Please enter rate manually.")
     return 1.0
 
 
