@@ -344,7 +344,7 @@ with st.sidebar:
         help="Corporate tax rate for calculating tax shield on debt"
     ) / 100.0
     
-  st.divider()
+    st.divider()
     
     st.subheader("FX Rate Projections")
     use_fx_growth = st.checkbox(
