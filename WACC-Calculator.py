@@ -83,7 +83,8 @@ def render_capital_sources(
     cost_label: str = "Cost",
     use_fx_growth: bool = False,
     fx_growth_rate: float = 0.0,
-    fx_time_horizon: int = 1
+    fx_time_horizon: int = 1,
+    fx_growth_mode: str = "global"
 ) -> Tuple[float, float, pd.DataFrame]:
     """
     Unified function for rendering equity/debt capital sources.
@@ -112,7 +113,11 @@ def render_capital_sources(
             for i in range(num_sources):
                 st.markdown(f"**{source_type} Source {i+1}**")
                 
-                col1, col2, col3, col4 = st.columns([1, 1.2, 1.2, 1])
+                # Adjust column layout based on FX growth mode
+                if use_fx_growth and fx_growth_mode == "line_item":
+                    col1, col2, col3, col4 = st.columns([1, 1.2, 1.2, 0.8])
+                else:
+                    col1, col2, col3, col4 = st.columns([1, 1.2, 1.2, 1])
                 
                 # Currency selection
                 source_curr = col1.selectbox(
@@ -132,22 +137,12 @@ def render_capital_sources(
                     key=f"{source_type.lower()}_{i}_amt"
                 )
                 
-                # FX Rate (only if different currency)
+               # FX Rate (only if different currency)
                 if source_curr != home_currency:
                     # Force fresh FX rate fetch when currency changes
                     live_rate = get_fx_rate(home_currency, source_curr)
                     
-                    # Apply FX growth projection if enabled
-                    if use_fx_growth and fx_growth_rate != 0:
-                        projected_rate = live_rate * ((1 + fx_growth_rate) ** fx_time_horizon)
-                        default_fx_rate = projected_rate
-                        rate_label = f"1 {source_curr} = ? {home_currency} (Projected)"
-                    else:
-                        default_fx_rate = live_rate
-                        rate_label = f"1 {source_curr} = ? {home_currency}"
-                    
                     # Create a unique key that forces widget refresh on currency change
-                    # This key changes whenever either currency changes
                     fx_input_key = f"{source_type.lower()}_{i}_fx_{home_currency}_{source_curr}"
                     
                     # Check if currency changed and force value update
@@ -158,37 +153,78 @@ def render_capital_sources(
                     # If currency changed, clear the old FX value from session state
                     if st.session_state[prev_key] != source_curr:
                         st.session_state[prev_key] = source_curr
-                        # Force the widget to use the new live_rate by removing old value
                         if fx_input_key in st.session_state:
                             del st.session_state[fx_input_key]
                     
-                    fx_rate = col3.number_input(
-                        rate_label,
-                        value=float(default_fx_rate),
-                        format="%.6f",
-                        key=fx_input_key,
-                        help=f"Exchange rate: How many {home_currency} per 1 {source_curr}. Auto-fetched from Yahoo Finance. You can override this value if needed."
-                    )
-                    
-                    # Show projection info if applied
-                    if use_fx_growth and fx_growth_rate != 0:
-                        st.caption(f"📊 Current: {live_rate:.6f} → Projected ({fx_time_horizon}Y @ {fx_growth_rate:.1%}): {projected_rate:.6f}")
+                    # Handle FX growth based on mode
+                    if use_fx_growth:
+                        if fx_growth_mode == "global":
+                            # Global mode: use the global FX growth rate
+                            if fx_growth_rate != 0:
+                                projected_rate = live_rate * ((1 + fx_growth_rate) ** fx_time_horizon)
+                                default_fx_rate = projected_rate
+                                rate_label = f"1 {source_curr} = ? {home_currency} (Projected)"
+                            else:
+                                default_fx_rate = live_rate
+                                rate_label = f"1 {source_curr} = ? {home_currency}"
+                            
+                            fx_rate = col3.number_input(
+                                rate_label,
+                                value=float(default_fx_rate),
+                                format="%.6f",
+                                key=fx_input_key,
+                                help=f"Exchange rate: How many {home_currency} per 1 {source_curr}. Auto-fetched from Yahoo Finance."
+                            )
+                            
+                            # Show projection info if applied
+                            if fx_growth_rate != 0:
+                                st.caption(f"📊 Current: {live_rate:.6f} → Projected ({fx_time_horizon}Y @ {fx_growth_rate:.1%}): {projected_rate:.6f}")
+                        
+                        else:  # line_item mode
+                            # Line-item mode: allow user to set individual growth rate
+                            line_fx_growth = col4.number_input(
+                                f"FX Growth (%/yr)",
+                                min_value=-50.0,
+                                max_value=50.0,
+                                value=0.0,
+                                step=0.1,
+                                key=f"{source_type.lower()}_{i}_fx_growth",
+                                help="Expected annual FX rate change for this specific source"
+                            ) / 100.0
+                            
+                            # Calculate projected rate with line-item growth
+                            if line_fx_growth != 0:
+                                projected_rate = live_rate * ((1 + line_fx_growth) ** fx_time_horizon)
+                                default_fx_rate = projected_rate
+                            else:
+                                default_fx_rate = live_rate
+                                projected_rate = live_rate
+                            
+                            fx_rate = col3.number_input(
+                                f"1 {source_curr} = ? {home_currency}",
+                                value=float(default_fx_rate),
+                                format="%.6f",
+                                key=fx_input_key,
+                                help=f"Exchange rate: How many {home_currency} per 1 {source_curr}. Auto-fetched and projected."
+                            )
+                            
+                            # Show projection info
+                            if line_fx_growth != 0:
+                                st.caption(f"📊 Current: {live_rate:.6f} → Projected ({fx_time_horizon}Y @ {line_fx_growth:.1%}): {projected_rate:.6f}")
+                    else:
+                        # No FX growth
+                        fx_rate = col3.number_input(
+                            f"1 {source_curr} = ? {home_currency}",
+                            value=float(live_rate),
+                            format="%.6f",
+                            key=fx_input_key,
+                            help=f"Exchange rate: How many {home_currency} per 1 {source_curr}. Auto-fetched from Yahoo Finance."
+                        )
                     
                     # Validate FX rate
                     if fx_rate <= 0:
                         st.error(f"❌ Invalid FX rate for source {i+1}. Must be > 0.")
                         fx_rate = 1.0
-                    
-                    # Show rate verification (helpful for debugging)
-                    if abs(fx_rate - live_rate) > 0.0001:
-                        st.caption(f"ℹ️ Using manual rate. Auto-fetched was: {live_rate:.6f}")
-                    
-                    # Convert to home currency
-                    home_value = raw_amount * fx_rate
-                else:
-                    fx_rate = 1.0
-                    home_value = raw_amount
-                    col3.markdown(f"**1:1**<br><small>(Same currency)</small>", unsafe_allow_html=True)
                 
                 # Cost/Rate input
                 cost_rate = col4.number_input(
@@ -308,7 +344,7 @@ with st.sidebar:
         help="Corporate tax rate for calculating tax shield on debt"
     ) / 100.0
     
-    st.divider()
+  st.divider()
     
     st.subheader("FX Rate Projections")
     use_fx_growth = st.checkbox(
@@ -319,27 +355,45 @@ with st.sidebar:
     
     fx_growth_rate = 0.0
     fx_time_horizon = 1
+    fx_growth_mode = "global"
     
     if use_fx_growth:
-        fx_growth_rate = st.number_input(
-            "Expected Annual FX Rate Change (%)",
-            min_value=-50.0,
-            max_value=50.0,
-            value=0.0,
-            step=0.1,
-            help="Expected annual % change in FX rate. Positive = foreign currency strengthens vs home currency"
-        ) / 100.0
-        
-        fx_time_horizon = st.number_input(
-            "Time Horizon (Years)",
-            min_value=1,
-            max_value=30,
-            value=1,
-            help="Investment time horizon for FX projections"
+        fx_growth_mode = st.radio(
+            "FX Growth Rate Level",
+            options=["global", "line_item"],
+            format_func=lambda x: "Global (Same for all currencies)" if x == "global" else "Line-Item (Specific per source)",
+            help="Choose whether to apply the same FX growth rate to all foreign sources, or set individual rates per source"
         )
         
-        st.info(f"💡 FX rates will be projected forward {fx_time_horizon} year(s) at {fx_growth_rate:.1%} annual growth")
-    
+        if fx_growth_mode == "global":
+            fx_growth_rate = st.number_input(
+                "Expected Annual FX Rate Change (%)",
+                min_value=-50.0,
+                max_value=50.0,
+                value=0.0,
+                step=0.1,
+                help="Expected annual % change in FX rate. Positive = foreign currency strengthens vs home currency"
+            ) / 100.0
+            
+            fx_time_horizon = st.number_input(
+                "Time Horizon (Years)",
+                min_value=1,
+                max_value=30,
+                value=1,
+                help="Investment time horizon for FX projections"
+            )
+            
+            st.info(f"💡 All FX rates will be projected forward {fx_time_horizon} year(s) at {fx_growth_rate:.1%} annual growth")
+        else:
+            fx_time_horizon = st.number_input(
+                "Time Horizon (Years)",
+                min_value=1,
+                max_value=30,
+                value=1,
+                help="Investment time horizon for FX projections (applies to all line items)"
+            )
+            st.info(f"💡 You can set individual FX growth rates for each foreign capital source below")
+            
     st.divider()
     
     st.markdown("### 📚 About WACC")
@@ -413,7 +467,8 @@ debt_value, debt_weighted_cost, debt_details = render_capital_sources(
     cost_label="Interest Rate",
     use_fx_growth=use_fx_growth,
     fx_growth_rate=fx_growth_rate,
-    fx_time_horizon=fx_time_horizon
+    fx_time_horizon=fx_time_horizon,
+    fx_growth_mode=fx_growth_mode
 )
 
 # Calculate blended cost of debt
