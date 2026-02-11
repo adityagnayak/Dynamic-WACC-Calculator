@@ -137,7 +137,7 @@ def render_capital_sources(
                     key=f"{source_type.lower()}_{i}_amt"
                 )
                 
-               # FX Rate (only if different currency)
+                # FX Rate (only if different currency)
                 if source_curr != home_currency:
                     # Force fresh FX rate fetch when currency changes
                     live_rate = get_fx_rate(home_currency, source_curr)
@@ -225,6 +225,13 @@ def render_capital_sources(
                     if fx_rate <= 0:
                         st.error(f"❌ Invalid FX rate for source {i+1}. Must be > 0.")
                         fx_rate = 1.0
+                    
+                    # Convert to home currency
+                    home_value = raw_amount * fx_rate
+                else:
+                    fx_rate = 1.0
+                    home_value = raw_amount
+                    col3.markdown(f"**1:1**<br><small>(Same currency)</small>", unsafe_allow_html=True)
                 
                 # Cost/Rate input
                 cost_rate = col4.number_input(
@@ -393,7 +400,7 @@ with st.sidebar:
                 help="Investment time horizon for FX projections (applies to all line items)"
             )
             st.info(f"💡 You can set individual FX growth rates for each foreign capital source below")
-            
+    
     st.divider()
     
     st.markdown("### 📚 About WACC")
@@ -443,7 +450,8 @@ equity_value, equity_weighted_cost, equity_details = render_capital_sources(
     cost_label="Cost of Equity",
     use_fx_growth=use_fx_growth,
     fx_growth_rate=fx_growth_rate,
-    fx_time_horizon=fx_time_horizon
+    fx_time_horizon=fx_time_horizon,
+    fx_growth_mode=fx_growth_mode
 )
 
 # Calculate blended cost of equity
