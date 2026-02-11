@@ -113,11 +113,8 @@ def render_capital_sources(
             for i in range(num_sources):
                 st.markdown(f"**{source_type} Source {i+1}**")
                 
-                # Adjust column layout based on FX growth mode
-                if use_fx_growth and fx_growth_mode == "line_item":
-                    col1, col2, col3, col4 = st.columns([1, 1.2, 1.2, 0.8])
-                else:
-                    col1, col2, col3, col4 = st.columns([1, 1.2, 1.2, 1])
+                # Standard 4-column layout for main inputs
+                col1, col2, col3, col4 = st.columns([1, 1.2, 1.2, 1])
                 
                 # Currency selection
                 source_curr = col1.selectbox(
@@ -126,6 +123,20 @@ def render_capital_sources(
                     index=0 if i == 0 else 1,
                     key=f"{source_type.lower()}_{i}_curr"
                 )
+                
+                # If line-item FX growth mode, show growth input below currency
+                line_fx_growth = 0.0
+                if use_fx_growth and fx_growth_mode == "line_item" and source_curr != home_currency:
+                    with col1:
+                        line_fx_growth = st.number_input(
+                            f"FX Growth (%/yr)",
+                            min_value=-50.0,
+                            max_value=50.0,
+                            value=0.0,
+                            step=0.1,
+                            key=f"{source_type.lower()}_{i}_fx_growth",
+                            help="Expected annual FX rate change for this specific source"
+                        ) / 100.0
                 
                 # Amount input
                 raw_amount = col2.number_input(
@@ -181,17 +192,7 @@ def render_capital_sources(
                                 st.caption(f"📊 Current: {live_rate:.6f} → Projected ({fx_time_horizon}Y @ {fx_growth_rate:.1%}): {projected_rate:.6f}")
                         
                         else:  # line_item mode
-                            # Line-item mode: allow user to set individual growth rate
-                            line_fx_growth = col4.number_input(
-                                f"FX Growth (%/yr)",
-                                min_value=-50.0,
-                                max_value=50.0,
-                                value=0.0,
-                                step=0.1,
-                                key=f"{source_type.lower()}_{i}_fx_growth",
-                                help="Expected annual FX rate change for this specific source"
-                            ) / 100.0
-                            
+                            # Line-item mode: use the growth rate collected earlier (below currency dropdown)
                             # Calculate projected rate with line-item growth
                             if line_fx_growth != 0:
                                 projected_rate = live_rate * ((1 + line_fx_growth) ** fx_time_horizon)
